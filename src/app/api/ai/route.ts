@@ -7,18 +7,12 @@ import {
   deepResearchPrompt,
 } from "@/lib/ai/prompts";
 
-// ---------------------------------------------------------------
-// Única ruta de IA. La clave API vive solo aquí (servidor).
-// Requiere sesión válida; el payload se valida con zod.
-// ---------------------------------------------------------------
-
 const baseSchema = z.object({
   action: z.enum([
     "meeting_prep","roleplay","structure_notes","score_opportunity",
     "proposal","followup_emails","company_research",
   ]),
   payload: z.record(z.unknown()).default({}),
-  // roleplay
   persona: z.string().max(80).optional(),
   history: z.array(z.object({ role: z.enum(["user","assistant"]), content: z.string().max(4000) })).max(40).optional(),
   finish: z.boolean().optional(),
@@ -26,14 +20,10 @@ const baseSchema = z.object({
 
 const MAX_PAYLOAD_CHARS = 24000;
 
-// ---------------------------------------------------------------
-// Llamada base a Anthropic (sin web search)
-// ---------------------------------------------------------------
-async function callAnthropic(system: string, messages: { role: string; content: string }[]) {
+async function callAnthropic(system: string, messages: { role: string; content: string }[], maxTokens = 4000) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return { error: "IA no configurada. Añade ANTHROPIC_API_KEY en las variables de entorno." };
-  }
+  if (!apiKey) return { error: "IA no configurada. Añade ANTHROPIC_API_KEY en las variables de entorno." };
+
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -43,11 +33,12 @@ async function callAnthropic(system: string, messages: { role: string; content: 
     },
     body: JSON.stringify({
       model: process.env.AI_MODEL || "claude-sonnet-4-5",
-      max_tokens: 4000,
+      max_tokens: maxTokens,
       system,
       messages,
     }),
   });
+
   if (!res.ok) {
     console.error("AI provider error", res.status, await res.text().catch(() => ""));
     return { error: "El servicio de IA no está disponible ahora mismo. Inténtalo de nuevo en un momento." };
@@ -60,14 +51,9 @@ async function callAnthropic(system: string, messages: { role: string; content: 
   return { text };
 }
 
-// ---------------------------------------------------------------
-// Llamada con web search — para research profundo de empresa
-// ---------------------------------------------------------------
 async function callAnthropicWithSearch(system: string, userMessage: string): Promise<{ text?: string; error?: string }> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return { error: "IA no configurada." };
-  }
+  if (!apiKey) return { error: "IA no configurada." };
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -82,19 +68,12 @@ async function callAnthropicWithSearch(system: string, userMessage: string): Pro
       max_tokens: 6000,
       system,
       messages: [{ role: "user", content: userMessage }],
-      tools: [
-        {
-          type: "web_search_20250305",
-          name: "web_search",
-          max_uses: 8,
-        },
-      ],
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 8 }],
     }),
   });
 
   if (!res.ok) {
     console.error("AI search error", res.status, await res.text().catch(() => ""));
-    // Si falla el search, devolvemos vacío para que el flujo continúe sin research
     return { text: "" };
   }
 
@@ -107,13 +86,11 @@ async function callAnthropicWithSearch(system: string, userMessage: string): Pro
 }
 
 function parseJson(text: string) {
-  // Limpia markdown y extrae el bloque JSON más externo
   let clean = text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
   const start = clean.indexOf("{");
   const end = clean.lastIndexOf("}");
   if (start === -1 || end === -1) throw new Error("no-json");
   clean = clean.slice(start, end + 1);
-  // Elimina caracteres de control que rompen JSON.parse
   clean = clean.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
   return JSON.parse(clean);
 }
@@ -132,33 +109,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "El contenido es demasiado largo. Acorta las notas o el contexto." }, { status: 400 });
     }
 
-    // ---------------------------------------------------------------
-    // meeting_prep: research web profundo antes de generar preparación
-    // ---------------------------------------------------------------
     if (action === "meeting_prep") {
       const researchPrompt = deepResearchPrompt(payload);
+      const researchResult = await callAnthropicWithSearch(researchPrompt.system, researchPrompt.user);
 
-      // Fase 1: research con web search
-      const researchResult = await callAnthropicWithSearch(
-        researchPrompt.system,
-        researchPrompt.user,
-      );
-
-      // Fase 2: preparación enriquecida con el research
       const enrichedPayload = {
         ...payload,
-        research_externo: researchResult.text || "No se pudo obtener research externo. Usa el conocimiento disponible.",
+        research_externo: researchResult.text?.trim()
+          ? researchResult.text
+          : "No se pudo obtener research externo. Usa el conocimiento disponible sobre la empresa y el sector.",
       };
+
       const prepPrompt = meetingPrepPrompt(enrichedPayload);
+      // 8000 tokens para que la preparación no se corte
       const prepResult = await callAnthropic(
         prepPrompt.system,
         [{ role: "user", content: prepPrompt.user! }],
+        8000,
       );
 
       if ("error" in prepResult && prepResult.error) {
         return NextResponse.json({ error: prepResult.error }, { status: 503 });
       }
-console.log("PREP_RESULT:", prepResult.text?.slice(0, 500));
+
       let json: unknown;
       try {
         json = parseJson(prepResult.text!);
@@ -168,9 +141,6 @@ console.log("PREP_RESULT:", prepResult.text?.slice(0, 500));
       return NextResponse.json({ data: json });
     }
 
-    // ---------------------------------------------------------------
-    // Resto de acciones — flujo original
-    // ---------------------------------------------------------------
     let prompt: { system: string; user?: string; messages?: { role: string; content: string }[] };
     switch (action) {
       case "structure_notes": prompt = structureNotesPrompt(payload); break;
