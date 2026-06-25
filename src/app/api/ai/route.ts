@@ -58,11 +58,16 @@ async function callAnthropic(system: string, messages: { role: string; content: 
 }
 
 function parseJson(text: string) {
-  const clean = text.replace(/```json|```/g, "").trim();
+  // Limpia markdown y extrae el bloque JSON más externo
+  let clean = text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
+  // Algunos modelos añaden texto antes o después del JSON
   const start = clean.indexOf("{");
   const end = clean.lastIndexOf("}");
   if (start === -1 || end === -1) throw new Error("no-json");
-  return JSON.parse(clean.slice(start, end + 1));
+  clean = clean.slice(start, end + 1);
+  // Elimina caracteres de control que rompen JSON.parse
+  clean = clean.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+  return JSON.parse(clean);
 }
 
 export async function POST(req: NextRequest) {
