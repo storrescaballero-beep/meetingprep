@@ -38,7 +38,7 @@ async function callAnthropic(system: string, messages: { role: string; content: 
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: process.env.AI_MODEL || "claude-sonnet-4-20250514",
+      model: process.env.AI_MODEL || "claude-sonnet-4-5",
       max_tokens: 4000,
       system,
       messages,
