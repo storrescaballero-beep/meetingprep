@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import {
   meetingPrepPrompt, roleplayPrompt, structureNotesPrompt,
   scoreOpportunityPrompt, proposalPrompt, followUpEmailsPrompt, companyResearchPrompt,
+  deepResearchPrompt,
 } from "@/lib/ai/prompts";
 
 // ---------------------------------------------------------------
@@ -25,6 +26,9 @@ const baseSchema = z.object({
 
 const MAX_PAYLOAD_CHARS = 24000;
 
+// ---------------------------------------------------------------
+// Llamada base a Anthropic (sin web search)
+// ---------------------------------------------------------------
 async function callAnthropic(system: string, messages: { role: string; content: string }[]) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -45,7 +49,6 @@ async function callAnthropic(system: string, messages: { role: string; content: 
     }),
   });
   if (!res.ok) {
-    // No exponemos detalles técnicos del proveedor al cliente.
     console.error("AI provider error", res.status, await res.text().catch(() => ""));
     return { error: "El servicio de IA no está disponible ahora mismo. Inténtalo de nuevo en un momento." };
   }
@@ -57,10 +60,55 @@ async function callAnthropic(system: string, messages: { role: string; content: 
   return { text };
 }
 
+// ---------------------------------------------------------------
+// Llamada con web search — para research profundo de empresa
+// ---------------------------------------------------------------
+async function callAnthropicWithSearch(system: string, userMessage: string): Promise<{ text?: string; error?: string }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { error: "IA no configurada." };
+  }
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "web-search-2025-03-05",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: 6000,
+      system,
+      messages: [{ role: "user", content: userMessage }],
+      tools: [
+        {
+          type: "web_search_20250305",
+          name: "web_search",
+          max_uses: 8,
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    console.error("AI search error", res.status, await res.text().catch(() => ""));
+    // Si falla el search, devolvemos vacío para que el flujo continúe sin research
+    return { text: "" };
+  }
+
+  const data = await res.json();
+  const text: string = (data.content ?? [])
+    .filter((b: any) => b.type === "text")
+    .map((b: any) => b.text)
+    .join("\n");
+  return { text };
+}
+
 function parseJson(text: string) {
   // Limpia markdown y extrae el bloque JSON más externo
   let clean = text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
-  // Algunos modelos añaden texto antes o después del JSON
   const start = clean.indexOf("{");
   const end = clean.lastIndexOf("}");
   if (start === -1 || end === -1) throw new Error("no-json");
@@ -84,9 +132,47 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "El contenido es demasiado largo. Acorta las notas o el contexto." }, { status: 400 });
     }
 
+    // ---------------------------------------------------------------
+    // meeting_prep: research web profundo antes de generar preparación
+    // ---------------------------------------------------------------
+    if (action === "meeting_prep") {
+      const researchPrompt = deepResearchPrompt(payload);
+
+      // Fase 1: research con web search
+      const researchResult = await callAnthropicWithSearch(
+        researchPrompt.system,
+        researchPrompt.user,
+      );
+
+      // Fase 2: preparación enriquecida con el research
+      const enrichedPayload = {
+        ...payload,
+        research_externo: researchResult.text || "No se pudo obtener research externo. Usa el conocimiento disponible.",
+      };
+      const prepPrompt = meetingPrepPrompt(enrichedPayload);
+      const prepResult = await callAnthropic(
+        prepPrompt.system,
+        [{ role: "user", content: prepPrompt.user! }],
+      );
+
+      if ("error" in prepResult && prepResult.error) {
+        return NextResponse.json({ error: prepResult.error }, { status: 503 });
+      }
+
+      let json: unknown;
+      try {
+        json = parseJson(prepResult.text!);
+      } catch {
+        return NextResponse.json({ error: "No se pudo generar un resultado estructurado. Vuelve a intentarlo." }, { status: 502 });
+      }
+      return NextResponse.json({ data: json });
+    }
+
+    // ---------------------------------------------------------------
+    // Resto de acciones — flujo original
+    // ---------------------------------------------------------------
     let prompt: { system: string; user?: string; messages?: { role: string; content: string }[] };
     switch (action) {
-      case "meeting_prep": prompt = meetingPrepPrompt(payload); break;
       case "structure_notes": prompt = structureNotesPrompt(payload); break;
       case "score_opportunity": prompt = scoreOpportunityPrompt(payload); break;
       case "proposal": prompt = proposalPrompt(payload); break;
@@ -97,13 +183,14 @@ export async function POST(req: NextRequest) {
         prompt = roleplayPrompt(payload, persona ?? "Escéptico", h, Boolean(finish));
         break;
       }
+      default:
+        return NextResponse.json({ error: "Acción no válida." }, { status: 400 });
     }
 
     const messages = prompt.messages?.length
       ? prompt.messages
       : [{ role: "user", content: prompt.user ?? (finish ? "Evalúa la conversación anterior." : "Empieza tú la conversación saludando brevemente como el cliente.") }];
 
-    // Para el cierre de roleplay añadimos la instrucción de evaluación al final.
     if (action === "roleplay" && finish) {
       messages.push({ role: "user", content: "FIN DEL ROLEPLAY. Evalúa ahora mi actuación como comercial según el formato JSON indicado." });
     }
@@ -115,7 +202,6 @@ export async function POST(req: NextRequest) {
     try {
       json = parseJson(result.text!);
     } catch {
-      // Un reintento implícito sería costoso; devolvemos error controlado.
       return NextResponse.json({ error: "No se pudo generar un resultado estructurado. Vuelve a intentarlo." }, { status: 502 });
     }
     return NextResponse.json({ data: json });
