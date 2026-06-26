@@ -176,23 +176,39 @@ Devuelve JSON:
   };
 }
 
+export function companyResearchPrompt
+// Reemplaza TODA esa función por la de abajo.
+// ================================================================
+
 export function companyResearchPrompt(input: Record<string, unknown>) {
+  const empresa = (input.company_name || input.empresa || "") as string;
+  const web = (input.website || input.web || "") as string;
+  const interlocutor = (input.contact_name || "") as string;
+  const cargo = (input.contact_role || "") as string;
+
   return {
-    system: `Eres un analista de inteligencia comercial. Recibes información introducida manualmente o de fuentes públicas sobre una empresa y un interlocutor, y la conviertes en un resumen comercial útil para preparar una reunión. NO inventes datos: trabaja solo con lo aportado más conocimiento general del sector claramente marcado como "contexto de sector". Nunca generes emails, teléfonos ni perfiles de LinkedIn. ${ANTI_GENERICO}
-Devuelve JSON:
+    system: `Eres un analista de inteligencia comercial. Investigas empresas e interlocutores para preparar reuniones B2B de alto nivel. Usas web search para obtener información real y actualizada.
+
+Devuelve ÚNICAMENTE JSON válido con esta forma exacta, sin markdown ni texto adicional:
 {
- "resumen_comercial": "qué hace la empresa y qué importa para venderle",
- "contexto_sector": ["dinámicas típicas del sector relevantes para la venta, marcadas como contexto general"],
- "angulos_de_entrada": ["ángulos comerciales concretos basados en la información disponible"],
- "informacion_que_falta": ["dato que convendría verificar antes de la reunión y dónde buscarlo legítimamente"],
- "nivel_confianza": "verificado|parcial|no_verificado"
+  "sector": "sector principal de la empresa en 5-10 palabras",
+  "country": "países donde opera principalmente, separados por coma",
+  "description": "descripción comercial de 3-5 frases: qué hace, para quién, cómo se posiciona, qué la diferencia. Orientada a una reunión de ventas.",
+  "pain_hypothesis": "2-3 hipótesis concretas de dolor que probablemente tiene esta empresa ahora mismo y por qué son plausibles. Específico al sector y momento actual.",
+  "contact_role": "cargo completo del interlocutor si lo has encontrado, o cadena vacía",
+  "contact_background": "trayectoria y contexto del interlocutor en 2-3 frases si se ha encontrado información, o cadena vacía",
+  "recent_news": "noticias o movimientos relevantes de los últimos 12 meses en 2-3 frases, o cadena vacía si no se encuentra nada"
 }`,
-    user: `Información disponible:\n${JSON.stringify(input, null, 2)}`,
+    user: `Investiga esta empresa e interlocutor para preparar una reunión comercial:
+
+Empresa: ${empresa}
+${web ? `Web: ${web}` : ""}
+${interlocutor ? `Interlocutor: ${interlocutor}` : ""}
+${cargo ? `Cargo conocido: ${cargo}` : ""}
+
+Busca: web corporativa de ${empresa}, noticias recientes de ${empresa}, ${interlocutor ? `perfil de ${interlocutor}` : "equipo directivo"}, sector y competidores.`,
   };
 }
-// ---------------------------------------------------------------
-// AÑADIR al final de prompts.ts (antes del último export si lo hay)
-// ---------------------------------------------------------------
 
 export function deepResearchPrompt(input: Record<string, unknown>) {
   const empresa = (input.company_name || input.empresa || "la empresa") as string;
