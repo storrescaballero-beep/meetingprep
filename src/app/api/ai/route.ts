@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
       if ("error" in prepResult && prepResult.error) {
         return NextResponse.json({ error: prepResult.error }, { status: 503 });
       }
-
+console.log("PREP_RAW:", prepResult.text?.slice(0, 800));
       let json: unknown;
       try {
         json = parseJson(prepResult.text!);
