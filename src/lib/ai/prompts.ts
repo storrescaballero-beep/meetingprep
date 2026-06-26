@@ -1,9 +1,3 @@
-// =====================================================================
-// Capa de prompts de MeetingPrep.
-// Cada función devuelve { system, user } y el handler exige JSON válido.
-// Regla común: cero frases genéricas, todo accionable y comercial.
-// =====================================================================
-
 const ANTI_GENERICO = `
 REGLAS DE CALIDAD (obligatorias):
 - Prohibido lo genérico: nada de "conocer mejor sus necesidades", "aportar valor", "ofrecer una solución personalizada", "entender sus retos".
@@ -175,10 +169,6 @@ Devuelve JSON:
     user: `Contexto de la reunión y de la oportunidad:\n${JSON.stringify(input, null, 2)}`,
   };
 }
-
-export function companyResearchPrompt
-// Reemplaza TODA esa función por la de abajo.
-// ================================================================
 
 export function companyResearchPrompt(input: Record<string, unknown>) {
   const empresa = (input.company_name || input.empresa || "") as string;
